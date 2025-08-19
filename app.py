@@ -3,7 +3,7 @@ import os
 import streamlit as st
 import pandas as pd
 
-from parsing import parse_free_text, parse_table_guess
+from fd_parsing import parse_free_text, parse_table_guess
 from pdf_engine import build_flashcards_pdf
 from ocr_client import ocr_image_to_text
 from utils import validate_cards_df, live_counts

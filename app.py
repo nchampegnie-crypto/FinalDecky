@@ -1,20 +1,9 @@
-# --- FlashDecky bootstrap: ensure local module imports work in any layout ---
-import os as _os, sys as _sys
-_THIS_DIR = _os.path.dirname(_os.path.abspath(__file__))
-if _THIS_DIR not in _sys.path:
-    _sys.path.insert(0, _THIS_DIR)
-
-# Prefer local fd_parsing; fall back to local parsing shim
-try:
-    from fd_parsing import parse_free_text, parse_table_guess  # type: ignore
-except Exception:  # pragma: no cover
-    from parsing import parse_free_text, parse_table_guess  # type: ignore
-
 import io
 import os
 import streamlit as st
 import pandas as pd
 
+from parsing import parse_free_text, parse_table_guess
 from pdf_engine import build_flashcards_pdf
 from ocr_client import ocr_image_to_text
 from utils import validate_cards_df, live_counts

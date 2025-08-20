@@ -3,7 +3,29 @@ import os
 import streamlit as st
 import pandas as pd
 
-from fd_parsing import parse_free_text, parse_table_guess
+
+# --- ensure local modules are importable even when Streamlit runs from repo root ---
+import os as _os, sys as _sys
+_this_dir = _os.path.dirname(_os.path.abspath(__file__))
+if _this_dir not in _sys.path:
+    _sys.path.insert(0, _this_dir)
+# resilient import: prefer fd_parsing, fall back to parsing shim
+try:
+    from fd_parsing import parse_free_text, parse_table_guess  # type: ignore
+except Exception:  # pragma: no cover
+    
+# --- ensure local modules are importable even when Streamlit runs from repo root ---
+import os as _os, sys as _sys
+_this_dir = _os.path.dirname(_os.path.abspath(__file__))
+if _this_dir not in _sys.path:
+    _sys.path.insert(0, _this_dir)
+# resilient import: prefer fd_parsing, fall back to parsing shim
+try:
+    from fd_parsing import parse_free_text, parse_table_guess  # type: ignore
+except Exception:  # pragma: no cover
+    from parsing import parse_free_text, parse_table_guess  # type: ignore
+  # type: ignore
+
 from pdf_engine import build_flashcards_pdf
 from ocr_client import ocr_image_to_text
 from utils import validate_cards_df, live_counts

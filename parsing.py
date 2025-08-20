@@ -1,1 +1,1 @@
-from fd_parsing import *  # shim to avoid import collisions
+from fd_parsing import *  # shim for environments that import 'parsing'\n

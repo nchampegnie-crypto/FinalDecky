@@ -1,104 +1,56 @@
 import re
 from typing import List, Tuple
-from utils import normalize_dashes, collapse_spaces
+from utils import collapse_spaces, normalize_dashes
 
-BULLET_RE = re.compile(r"^\s*[\-\*•]\s+")
-NUMBERED_RE = re.compile(r"^\s*\d+[\.)]\s+")
-DICT_RE = re.compile(r"^\s*([^()\n]+?)\s*\(([^)]+)\)\s+(.+)$")
+# Beta-style: capture TERM before the first '-', '–', '—', or ':' (after optional number/bullet),
+# then capture DEF; append following non-matching lines to the previous DEF.
+SEP_PATTERN = re.compile(
+    r'^\s*(?:\d+[\.|\)]\s*)?(?:[•\-]\s*)?(?P<term>.+?)\s*(?:[\-\u2013\u2014:])\s+(?P<def>.+)\s*$'
+)
 
-def first_colon_outside_parens(s: str) -> int:
-    depth = 0
-    for i, ch in enumerate(s):
-        if ch == "(":
-            depth += 1
-        elif ch == ")":
-            depth = max(0, depth-1)
-        elif ch == ":" and depth == 0:
-            return i
-    return -1
-
-EN_EM_RE = re.compile(r"[–—]")
-HYPHEN_SPLIT_RE = re.compile(r"\s-\s|-(?=\s)")
-
-def split_term_def_line(line: str) -> Tuple[str, str]:
-    m = DICT_RE.match(line)
-    if m:
-        return f"{m.group(1).strip()} ({m.group(2).strip()})", m.group(3).strip()
-    if "\t" in line:
-        a, b = line.split("\t", 1)
-        return a.strip(), b.strip()
-    ci = first_colon_outside_parens(line)
-    idxs = []
-    if ci != -1:
-        idxs.append(("colon", ci))
-    m_dash = EN_EM_RE.search(line)
-    if m_dash:
-        idxs.append(("dash", m_dash.start()))
-    m_h = HYPHEN_SPLIT_RE.search(line)
-    if m_h:
-        idxs.append(("hyphen", m_h.start()))
-    if idxs:
-        idxs.sort(key=lambda x: x[1])
-        i = idxs[0][1]
-        return line[:i].strip().lstrip("-–—").strip(), line[i+1:].strip()
-    return line.strip(), ""
-
-def looks_like_item_start(line: str) -> bool:
-    if not line.strip():
-        return False
-    raw = line.strip()
-    if BULLET_RE.match(raw) or NUMBERED_RE.match(raw):
-        return True
-    if "\t" in raw:
-        return True
-    if first_colon_outside_parens(raw) != -1:
-        return True
-    if EN_EM_RE.search(raw) or HYPHEN_SPLIT_RE.search(raw):
-        return True
-    if DICT_RE.match(raw):
-        return True
-    return False
+def parse_pairs_from_text(txt: str) -> List[Tuple[str, str]]:
+    raw_lines = [ln.strip() for ln in normalize_dashes(txt).splitlines() if ln.strip()]
+    pairs: List[Tuple[str, str]] = []
+    last_idx = -1
+    for ln in raw_lines:
+        m = SEP_PATTERN.match(ln)
+        if m:
+            term = collapse_spaces(m.group("term").strip().lstrip('-–—'))
+            definition = collapse_spaces(m.group("def").strip())
+            pairs.append((term, definition))
+            last_idx = len(pairs) - 1
+        else:
+            if last_idx >= 0:
+                t, d = pairs[last_idx]
+                needs_space = not (d.endswith('-') or d.endswith('–') or d.endswith('—'))
+                sep = " " if needs_space else ""
+                pairs[last_idx] = (t, collapse_spaces((d + sep + ln).strip()))
+            else:
+                # orphan line: treat as term with empty def (user can edit later)
+                pairs.append((ln, ""))
+                last_idx = len(pairs) - 1
+    return pairs
 
 def parse_free_text(text: str) -> Tuple[List[Tuple[str, str]], List[str]]:
-    text = normalize_dashes(text)
-    lines = [l.rstrip() for l in text.splitlines()]
-    records: List[Tuple[str, str]] = []
-    warnings: List[str] = []
-    cur_term = None
-    cur_def = []
-
-    def flush():
-        nonlocal cur_term, cur_def
-        if cur_term is not None:
-            term = collapse_spaces(cur_term.strip().lstrip("-–—").strip())
-            definition = collapse_spaces(" ".join([p for p in cur_def if p.strip()])).strip()
-            records.append((term, definition))
-        cur_term, cur_def = None, []
-
-    for raw in lines:
-        line = raw.strip()
-        if not line:
-            if cur_term is not None:
-                cur_def.append("")
-            continue
-        lm = BULLET_RE.match(line) or NUMBERED_RE.match(line)
-        content = line[ lm.end(): ] if lm else line
-
-        if looks_like_item_start(line):
-            if cur_term is not None:
-                flush()
-            t, d = split_term_def_line(content)
-            cur_term = t
-            cur_def = [d] if d else []
-        else:
-            if cur_term is None:
-                cur_term = content
-                cur_def = []
-            else:
-                cur_def.append(content)
-
-    flush()
-    for i, (f, b) in enumerate(records, 1):
-        if not f or not b:
+    """Return (records, warnings), where records = [(Front, Back)] using the Beta parser rules."""
+    pairs = parse_pairs_from_text(text or "")
+    warnings = []
+    for i, (f, b) in enumerate(pairs, start=1):
+        if not f or not str(f).strip() or not b or not str(b).strip():
             warnings.append(f"Row {i} has an empty {'Front' if not f else 'Back'} field.")
-    return records, warnings
+    return pairs, warnings
+
+def parse_table_guess(file) -> Tuple[object, list]:
+    import pandas as pd
+    name = file.name.lower()
+    if name.endswith(".csv"):
+        df = pd.read_csv(file)
+    elif name.endswith(".tsv"):
+        df = pd.read_csv(file, sep='\t')
+    elif name.endswith(".xlsx"):
+        df = pd.read_excel(file)
+    else:
+        return None, []
+    df = df.dropna(how='all').dropna(axis=1, how='all')
+    cols = list(df.columns)
+    return df, cols

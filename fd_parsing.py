@@ -1,125 +1,56 @@
 import re
 from typing import List, Tuple
-from utils import normalize_dashes, collapse_spaces
+from utils import collapse_spaces, normalize_dashes
 
-BULLET_RE = re.compile(r"^\s*[\-\*•]\s+")
-NUMBERED_RE = re.compile(r"^\s*\d+[\.)]\s+")
-DICT_RE = re.compile(r"^\s*([^()\n]+?)\s*\(([^)]+)\)\s+(.+)$")
+# Beta-style: capture TERM before the first '-', '–', '—', or ':' (after optional number/bullet),
+# then capture DEF; append following non-matching lines to the previous DEF.
+SEP_PATTERN = re.compile(
+    r'^\s*(?:\d+[\.|\)]\s*)?(?:[•\-]\s*)?(?P<term>.+?)\s*(?:[\-\u2013\u2014:])\s+(?P<def>.+)\s*$'
+)
 
-EN_EM = ["–", "—"]
-
-def first_colon_outside_parens(s: str) -> int:
-    depth = 0
-    for i, ch in enumerate(s):
-        if ch == "(":
-            depth += 1
-        elif ch == ")":
-            depth = max(0, depth-1)
-        elif ch == ":" and depth == 0:
-            return i
-    return -1
-
-def first_sep_index(s: str) -> int:
-    # Priority order: TAB, colon(outside parens), en/em dash, plain hyphen
-    if "\t" in s:
-        return s.index("\t")
-    ci = first_colon_outside_parens(s)
-    cand = [ci] if ci != -1 else []
-    for d in EN_EM:
-        j = s.find(d)
-        if j != -1:
-            cand.append(j)
-            break
-    jh = s.find("-")
-    if jh != -1:
-        cand.append(jh)
-    cand = [c for c in cand if c is not None and c >= 0]
-    return min(cand) if cand else -1
-
-def split_term_def_line(line: str) -> Tuple[str, str]:
-    # dictionary pattern
-    m = DICT_RE.match(line)
-    if m:
-        return f"{m.group(1).strip()} ({m.group(2).strip()})", m.group(3).strip()
-
-    i = first_sep_index(line)
-    if i != -1:
-        return line[:i].strip().lstrip("-–—").strip(), line[i+1:].strip()
-
-    # fallback: whole line as term only
-    return line.strip(), ""
-
-def looks_like_item_start(original_line: str) -> bool:
-    raw = original_line.strip()
-    if not raw:
-        return False
-
-    # bullets or numbers always start a new item
-    m = BULLET_RE.match(raw) or NUMBERED_RE.match(raw)
-    if m:
-        return True
-
-    # Evaluate split position on content (without leading bullet/number if any)
-    content = raw[m.end():] if m else raw
-    i = first_sep_index(content)
-    if i == -1:
-        return False
-
-    # Heuristic: the separator should appear early (term zone)
-    # - within first 40 chars or within first third of the line
-    return i <= max(40, len(content) // 3)
+def parse_pairs_from_text(txt: str) -> List[Tuple[str, str]]:
+    raw_lines = [ln.strip() for ln in normalize_dashes(txt).splitlines() if ln.strip()]
+    pairs: List[Tuple[str, str]] = []
+    last_idx = -1
+    for ln in raw_lines:
+        m = SEP_PATTERN.match(ln)
+        if m:
+            term = collapse_spaces(m.group("term").strip().lstrip('-–—'))
+            definition = collapse_spaces(m.group("def").strip())
+            pairs.append((term, definition))
+            last_idx = len(pairs) - 1
+        else:
+            if last_idx >= 0:
+                t, d = pairs[last_idx]
+                needs_space = not (d.endswith('-') or d.endswith('–') or d.endswith('—'))
+                sep = " " if needs_space else ""
+                pairs[last_idx] = (t, collapse_spaces((d + sep + ln).strip()))
+            else:
+                # orphan line: treat as term with empty def (user can edit later)
+                pairs.append((ln, ""))
+                last_idx = len(pairs) - 1
+    return pairs
 
 def parse_free_text(text: str) -> Tuple[List[Tuple[str, str]], List[str]]:
-    """Parse text into (Front, Back) records.
-    New item when: numbered/bulleted OR a separator appears early in the line.
-    Split at the first separator (TAB / ':' outside parens / en/em dash / '-').
-    Definition continues by appending subsequent lines until the next item-start.
-    """
-    text = normalize_dashes(text)
-    lines = [l.rstrip() for l in text.splitlines()]
-
-    records: List[Tuple[str, str]] = []
-    warnings: List[str] = []
-
-    cur_term = None
-    cur_def_parts: List[str] = []
-
-    def flush():
-        nonlocal cur_term, cur_def_parts
-        if cur_term is not None:
-            term = collapse_spaces(cur_term.strip().lstrip("-–—").strip())
-            definition = collapse_spaces(" ".join([p for p in cur_def_parts if p is not None and p.strip()])).strip()
-            records.append((term, definition))
-        cur_term, cur_def_parts = None, []
-
-    for raw in lines:
-        line = raw.strip()
-        if not line:
-            if cur_term is not None:
-                cur_def_parts.append("")  # keep paragraph break
-            continue
-
-        # Remove leading bullet/number for splitting
-        lm = BULLET_RE.match(line) or NUMBERED_RE.match(line)
-        content = line[lm.end():] if lm else line
-
-        if looks_like_item_start(line):
-            if cur_term is not None:
-                flush()
-            t, d = split_term_def_line(content)
-            cur_term = t
-            cur_def_parts = [d] if d else []
-        else:
-            if cur_term is None:
-                cur_term = content
-                cur_def_parts = []
-            else:
-                cur_def_parts.append(content)
-
-    flush()
-
-    for i, (f, b) in enumerate(records, 1):
-        if not f or not b:
+    """Return (records, warnings), where records = [(Front, Back)] using the Beta parser rules."""
+    pairs = parse_pairs_from_text(text or "")
+    warnings = []
+    for i, (f, b) in enumerate(pairs, start=1):
+        if not f or not str(f).strip() or not b or not str(b).strip():
             warnings.append(f"Row {i} has an empty {'Front' if not f else 'Back'} field.")
+    return pairs, warnings
 
-    return records, warnings
+def parse_table_guess(file) -> Tuple[object, list]:
+    import pandas as pd
+    name = file.name.lower()
+    if name.endswith(".csv"):
+        df = pd.read_csv(file)
+    elif name.endswith(".tsv"):
+        df = pd.read_csv(file, sep='\t')
+    elif name.endswith(".xlsx"):
+        df = pd.read_excel(file)
+    else:
+        return None, []
+    df = df.dropna(how='all').dropna(axis=1, how='all')
+    cols = list(df.columns)
+    return df, cols
